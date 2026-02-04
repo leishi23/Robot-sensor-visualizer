@@ -304,7 +304,7 @@ def main():
     st.markdown("---")
     
     # 检查是否配置了 secrets
-    if "gdrive_folder_id" not in st.secrets:
+    if "gcp_service_account" not in st.secrets or "gdrive_folder_id" not in st.secrets:
         st.error("❌ Google Drive credentials not configured!")
         st.info("""
         Please configure your secrets in Streamlit Cloud:
