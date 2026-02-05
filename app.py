@@ -323,24 +323,55 @@ def main():
             """)
             return
         
-        # 检查 gdrive_folder_id (在顶层)
-        folder_id = st.secrets.get("gdrive_folder_id", None)
+        # 尝试多种方式获取 gdrive_folder_id
+        folder_id = None
+        
+        # 方式1: 顶层 (推荐)
+        if "gdrive_folder_id" in st.secrets:
+            folder_id = st.secrets["gdrive_folder_id"]
+            st.sidebar.success("✅ Found gdrive_folder_id at top level")
+        
+        # 方式2: 尝试从 gcp_service_account 内部
+        elif "gdrive_folder_id" in st.secrets.get("gcp_service_account", {}):
+            folder_id = st.secrets["gcp_service_account"]["gdrive_folder_id"]
+            st.sidebar.warning("⚠️ Found gdrive_folder_id inside gcp_service_account (not recommended)")
+        
+        # 方式3: 显示调试信息
         if folder_id is None:
-            st.error("❌ gdrive_folder_id not configured!")
+            st.error("❌ gdrive_folder_id not found!")
+            st.write("**Debug Info - Available secrets keys:**")
+            st.write(f"Top-level keys: {list(st.secrets.keys())}")
+            if "gcp_service_account" in st.secrets:
+                st.write(f"Keys in gcp_service_account: {list(st.secrets['gcp_service_account'].keys())}")
             st.info("""
-            Please add gdrive_folder_id to your secrets (at the TOP level, not indented):
+            **Please configure gdrive_folder_id in your secrets:**
+            
+            Make sure it's at the TOP level (no indentation), like this:
+            
             ```toml
             [gcp_service_account]
             type = "service_account"
-            ...
+            project_id = "robot-visualizer-486406"
+            private_key_id = "..."
+            private_key = "..."
+            client_email = "..."
+            client_id = "..."
+            auth_uri = "https://accounts.google.com/o/oauth2/auth"
+            token_uri = "https://oauth2.googleapis.com/token"
+            auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
+            client_x509_cert_url = "..."
+            universe_domain = "googleapis.com"
             
-            gdrive_folder_id = "YOUR_FOLDER_ID"
+            gdrive_folder_id = "16Nsu_oVO9wfJ8sushHbXHEC63KooOAbE"
             ```
-            Note: gdrive_folder_id should NOT be indented under [gcp_service_account]
+            
+            **Critical: The line `gdrive_folder_id = "..."` should have ZERO spaces before it!**
             """)
             return
+            
     except Exception as e:
         st.error(f"❌ Error reading secrets: {e}")
+        st.exception(e)
         return
     
     # 获取 Google Drive 服务
