@@ -304,29 +304,49 @@ def main():
     st.markdown("---")
     
     # 检查是否配置了 secrets
-    if "gcp_service_account" not in st.secrets or "gdrive_folder_id" not in st.secrets:
-        st.error("❌ Google Drive credentials not configured!")
-        st.info("""
-        Please configure your secrets in Streamlit Cloud:
-        1. Go to your app settings
-        2. Add secrets in TOML format:
-        ```toml
-        [gcp_service_account]
-        type = "service_account"
-        project_id = "..."
-        # ... other fields from service_account.json
+    try:
+        # 检查 gcp_service_account
+        if "gcp_service_account" not in st.secrets:
+            st.error("❌ Google Drive credentials not configured!")
+            st.info("""
+            Please configure your secrets in Streamlit Cloud:
+            1. Go to your app settings
+            2. Add secrets in TOML format:
+            ```toml
+            [gcp_service_account]
+            type = "service_account"
+            project_id = "..."
+            # ... other fields from service_account.json
+            
+            gdrive_folder_id = "YOUR_FOLDER_ID"
+            ```
+            """)
+            return
         
-        gdrive_folder_id = "YOUR_FOLDER_ID"
-        ```
-        """)
+        # 检查 gdrive_folder_id (在顶层)
+        folder_id = st.secrets.get("gdrive_folder_id", None)
+        if folder_id is None:
+            st.error("❌ gdrive_folder_id not configured!")
+            st.info("""
+            Please add gdrive_folder_id to your secrets (at the TOP level, not indented):
+            ```toml
+            [gcp_service_account]
+            type = "service_account"
+            ...
+            
+            gdrive_folder_id = "YOUR_FOLDER_ID"
+            ```
+            Note: gdrive_folder_id should NOT be indented under [gcp_service_account]
+            """)
+            return
+    except Exception as e:
+        st.error(f"❌ Error reading secrets: {e}")
         return
     
     # 获取 Google Drive 服务
     service = get_gdrive_service()
     if service is None:
         return
-    
-    folder_id = st.secrets["gdrive_folder_id"]
     
     # 侧边栏
     with st.sidebar:
