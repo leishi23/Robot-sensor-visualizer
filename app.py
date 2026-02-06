@@ -381,7 +381,7 @@ def main():
     
     # 侧边栏
     with st.sidebar:
-        st.header("📁 File Selection (Google Drive)")
+        st.header("📁 File Selection")
         
         # 显示文件夹信息
         st.info(f"📂 Folder ID: {folder_id[:20]}...")
