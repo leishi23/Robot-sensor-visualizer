@@ -300,7 +300,7 @@ def plot_all_tactile_comparison(data, side, frame_idx):
 # ============================================================================
 
 def main():
-    st.title("🤖 Robot Sensor Data Visualizer (Google Drive)")
+    st.title("🤖 Robot Sensor Data Visualizer")
     st.markdown("---")
     
     # 检查是否配置了 secrets
@@ -334,7 +334,7 @@ def main():
         # 方式2: 尝试从 gcp_service_account 内部
         elif "gdrive_folder_id" in st.secrets.get("gcp_service_account", {}):
             folder_id = st.secrets["gcp_service_account"]["gdrive_folder_id"]
-            st.sidebar.warning("⚠️ Found gdrive_folder_id inside gcp_service_account (not recommended)")
+            # st.sidebar.warning("⚠️ Found gdrive_folder_id inside gcp_service_account (not recommended)")
         
         # 方式3: 显示调试信息
         if folder_id is None:
