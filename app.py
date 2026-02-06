@@ -94,29 +94,25 @@ def list_json_files_from_gdrive(_service, folder_id):
 @st.cache_data(ttl=3600)
 def build_folder_structure(json_files):
     """构建文件夹结构"""
-    structure = {}
+    # 根节点始终有标准结构
+    root = {'__subfolders__': {}, '__files__': []}
     
     for file_info in json_files:
         parts = file_info['path'].split('/')
         
-        current = structure
-        for part in parts[:-1]:
-            if part not in current:
-                current[part] = {'__subfolders__': {}, '__files__': []}
-            current = current[part]['__subfolders__']
+        # 从根节点开始导航
+        current = root
         
-        # 添加文件到最后一级文件夹
-        if len(parts) > 1:
-            parent = parts[-2]
-            if parent not in current:
-                current[parent] = {'__subfolders__': {}, '__files__': []}
-            current[parent]['__files__'].append(file_info)
-        else:
-            if '__root__' not in structure:
-                structure['__root__'] = {'__subfolders__': {}, '__files__': []}
-            structure['__root__']['__files__'].append(file_info)
+        # 遍历路径（除了文件名）
+        for part in parts[:-1]:
+            if part not in current['__subfolders__']:
+                current['__subfolders__'][part] = {'__subfolders__': {}, '__files__': []}
+            current = current['__subfolders__'][part]
+        
+        # 添加文件到当前节点
+        current['__files__'].append(file_info)
     
-    return structure
+    return root
 
 @st.cache_data(ttl=3600)
 def download_file_from_gdrive(_service, file_id):
@@ -372,7 +368,7 @@ def main():
         st.markdown("---")
         
         # 获取当前文件夹内容
-        current = structure.get('__root__', structure)
+        current = structure
         for folder_name in st.session_state.current_path:
             if folder_name in current['__subfolders__']:
                 current = current['__subfolders__'][folder_name]
