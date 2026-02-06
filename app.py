@@ -5,7 +5,6 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import os
 from pathlib import Path
-import tempfile
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
@@ -49,7 +48,7 @@ def get_gdrive_service():
         st.error(f"Failed to authenticate with Google Drive: {e}")
         return None
 
-@st.cache_data(ttl=3600)  # 缓存1小时
+@st.cache_data(ttl=3600)
 def list_json_files_from_gdrive(_service, folder_id):
     """从 Google Drive 文件夹递归获取所有 JSON 文件"""
     if _service is None:
@@ -76,10 +75,8 @@ def list_json_files_from_gdrive(_service, folder_id):
                 
                 current_path = f"{parent_path}/{file_name}" if parent_path else file_name
                 
-                # 如果是文件夹，递归搜索
                 if mime_type == 'application/vnd.google-apps.folder':
                     list_files_recursive(file_id, current_path)
-                # 如果是 JSON 文件，添加到列表
                 elif file_name.endswith('.json'):
                     json_files.append({
                         'id': file_id,
@@ -89,13 +86,37 @@ def list_json_files_from_gdrive(_service, folder_id):
         except Exception as e:
             st.warning(f"Error listing files in folder {parent_path}: {e}")
     
-    # 开始递归搜索
     list_files_recursive(folder_id)
-    
-    # 按路径排序
     json_files.sort(key=lambda x: x['path'])
     
     return json_files
+
+@st.cache_data(ttl=3600)
+def build_folder_structure(json_files):
+    """构建文件夹结构"""
+    structure = {}
+    
+    for file_info in json_files:
+        parts = file_info['path'].split('/')
+        
+        current = structure
+        for part in parts[:-1]:
+            if part not in current:
+                current[part] = {'__subfolders__': {}, '__files__': []}
+            current = current[part]['__subfolders__']
+        
+        # 添加文件到最后一级文件夹
+        if len(parts) > 1:
+            parent = parts[-2]
+            if parent not in current:
+                current[parent] = {'__subfolders__': {}, '__files__': []}
+            current[parent]['__files__'].append(file_info)
+        else:
+            if '__root__' not in structure:
+                structure['__root__'] = {'__subfolders__': {}, '__files__': []}
+            structure['__root__']['__files__'].append(file_info)
+    
+    return structure
 
 @st.cache_data(ttl=3600)
 def download_file_from_gdrive(_service, file_id):
@@ -112,7 +133,6 @@ def download_file_from_gdrive(_service, file_id):
         while not done:
             status, done = downloader.next_chunk()
         
-        # 解析 JSON
         file_content.seek(0)
         data = json.loads(file_content.read().decode('utf-8'))
         return data
@@ -121,7 +141,7 @@ def download_file_from_gdrive(_service, file_id):
         return None
 
 # ============================================================================
-# 原有的可视化函数（保持不变）
+# 可视化函数
 # ============================================================================
 
 def plot_wrist_pose(data, side, frame_idx=None):
@@ -129,7 +149,6 @@ def plot_wrist_pose(data, side, frame_idx=None):
     poses = np.array(data[f'{side}_wrist_pose'])
     
     if frame_idx is not None:
-        # 显示单帧
         pose = poses[frame_idx]
         st.write(f"**Frame {frame_idx}:**")
         col1, col2 = st.columns(2)
@@ -138,14 +157,12 @@ def plot_wrist_pose(data, side, frame_idx=None):
         with col2:
             st.metric("Quaternion (w, x, y, z)", f"[{pose[3]:.3f}, {pose[4]:.3f}, {pose[5]:.3f}, {pose[6]:.3f}]")
     else:
-        # 绘制时间序列
         fig = make_subplots(
             rows=2, cols=1,
             subplot_titles=('Position (x, y, z)', 'Orientation (quaternion w, x, y, z)'),
             vertical_spacing=0.15
         )
         
-        # 位置
         for i, label in enumerate(['x', 'y', 'z']):
             fig.add_trace(
                 go.Scatter(x=list(range(len(poses))), y=poses[:, i], 
@@ -153,7 +170,6 @@ def plot_wrist_pose(data, side, frame_idx=None):
                 row=1, col=1
             )
         
-        # 四元数
         for i, label in enumerate(['w', 'x', 'y', 'z']):
             fig.add_trace(
                 go.Scatter(x=list(range(len(poses))), y=poses[:, i+3], 
@@ -173,14 +189,12 @@ def plot_joint_states(data, side, frame_idx=None):
     joints = np.array(data[f'{side}_joint_states'])
     
     if frame_idx is not None:
-        # 显示单帧
         joint = joints[frame_idx]
         st.write(f"**Frame {frame_idx} - {len(joint)} joints:**")
         cols = st.columns(min(6, len(joint)))
         for i, val in enumerate(joint):
             cols[i % len(cols)].metric(f"J{i}", f"{val:.3f}")
     else:
-        # 绘制时间序列
         fig = go.Figure()
         
         for i in range(joints.shape[1]):
@@ -208,7 +222,6 @@ def plot_tactile_data(data, side, sensor_type, frame_idx=None):
         return
     
     if frame_idx is not None:
-        # 显示单帧热图
         tactile_frame = np.array(tactile[frame_idx])
         
         fig = go.Figure(data=go.Heatmap(
@@ -227,14 +240,12 @@ def plot_tactile_data(data, side, sensor_type, frame_idx=None):
         
         st.plotly_chart(fig, use_container_width=True)
         
-        # 显示统计信息
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Min", f"{tactile_frame.min():.3f}")
         col2.metric("Max", f"{tactile_frame.max():.3f}")
         col3.metric("Mean", f"{tactile_frame.mean():.3f}")
         col4.metric("Std", f"{tactile_frame.std():.3f}")
     else:
-        # 绘制时间序列热图
         tactile_array = np.array(tactile)
         
         fig = go.Figure(data=go.Heatmap(
@@ -252,7 +263,6 @@ def plot_tactile_data(data, side, sensor_type, frame_idx=None):
         
         st.plotly_chart(fig, use_container_width=True)
         
-        # 显示整体统计
         col1, col2, col3 = st.columns(3)
         col1.metric("Num Frames", tactile_array.shape[0])
         col2.metric("Num Sensors", tactile_array.shape[1])
@@ -303,218 +313,196 @@ def main():
     st.title("🤖 Robot Sensor Data Visualizer")
     st.markdown("---")
     
-    # 检查是否配置了 secrets
+    # 检查 secrets
     try:
-        # 检查 gcp_service_account
         if "gcp_service_account" not in st.secrets:
             st.error("❌ Google Drive credentials not configured!")
-            st.info("""
-            Please configure your secrets in Streamlit Cloud:
-            1. Go to your app settings
-            2. Add secrets in TOML format:
-            ```toml
-            [gcp_service_account]
-            type = "service_account"
-            project_id = "..."
-            # ... other fields from service_account.json
-            
-            gdrive_folder_id = "YOUR_FOLDER_ID"
-            ```
-            """)
             return
         
-        # 尝试多种方式获取 gdrive_folder_id
         folder_id = None
-        
-        # 方式1: 顶层 (推荐)
         if "gdrive_folder_id" in st.secrets:
             folder_id = st.secrets["gdrive_folder_id"]
-            st.sidebar.success("✅ Found gdrive_folder_id at top level")
-        
-        # 方式2: 尝试从 gcp_service_account 内部
         elif "gdrive_folder_id" in st.secrets.get("gcp_service_account", {}):
             folder_id = st.secrets["gcp_service_account"]["gdrive_folder_id"]
-            # st.sidebar.warning("⚠️ Found gdrive_folder_id inside gcp_service_account (not recommended)")
         
-        # 方式3: 显示调试信息
         if folder_id is None:
-            st.error("❌ gdrive_folder_id not found!")
-            st.write("**Debug Info - Available secrets keys:**")
-            st.write(f"Top-level keys: {list(st.secrets.keys())}")
-            if "gcp_service_account" in st.secrets:
-                st.write(f"Keys in gcp_service_account: {list(st.secrets['gcp_service_account'].keys())}")
-            st.info("""
-            **Please configure gdrive_folder_id in your secrets:**
-            
-            Make sure it's at the TOP level (no indentation), like this:
-            
-            ```toml
-            [gcp_service_account]
-            type = "service_account"
-            project_id = "robot-visualizer-486406"
-            private_key_id = "..."
-            private_key = "..."
-            client_email = "..."
-            client_id = "..."
-            auth_uri = "https://accounts.google.com/o/oauth2/auth"
-            token_uri = "https://oauth2.googleapis.com/token"
-            auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
-            client_x509_cert_url = "..."
-            universe_domain = "googleapis.com"
-            
-            gdrive_folder_id = "16Nsu_oVO9wfJ8sushHbXHEC63KooOAbE"
-            ```
-            
-            **Critical: The line `gdrive_folder_id = "..."` should have ZERO spaces before it!**
-            """)
+            st.error("❌ gdrive_folder_id not configured!")
             return
             
     except Exception as e:
         st.error(f"❌ Error reading secrets: {e}")
-        st.exception(e)
         return
     
-    # 获取 Google Drive 服务
     service = get_gdrive_service()
     if service is None:
         return
     
+    # 加载所有文件
+    with st.spinner("Loading files from Google Drive..."):
+        all_files = list_json_files_from_gdrive(service, folder_id)
+    
+    if not all_files:
+        st.error("No JSON files found")
+        return
+    
+    structure = build_folder_structure(all_files)
+    
+    # 初始化 session state
+    if 'current_path' not in st.session_state:
+        st.session_state.current_path = []
+    if 'selected_file' not in st.session_state:
+        st.session_state.selected_file = None
+    
     # 侧边栏
     with st.sidebar:
-        st.header("📁 File Selection")
+        st.header("📁 File Browser")
+        st.success(f"Total: {len(all_files)} files")
         
-        # 显示文件夹信息
-        st.info(f"📂 Folder ID: {folder_id[:20]}...")
+        # 面包屑导航
+        breadcrumb = " / ".join(['Root'] + st.session_state.current_path)
+        st.markdown(f"**📂 {breadcrumb}**")
         
-        # 加载文件列表
-        with st.spinner("Loading files from Google Drive..."):
-            json_files = list_json_files_from_gdrive(service, folder_id)
-        
-        if json_files:
-            st.success(f"Found {len(json_files)} JSON files")
-            
-            # 文件选择
-            file_idx = st.selectbox(
-                "Select File",
-                range(len(json_files)),
-                format_func=lambda x: json_files[x]['path']
-            )
-            
-            selected_file = json_files[file_idx]
-            
-            # 显示当前文件信息
-            st.info(f"📄 File {file_idx + 1}/{len(json_files)}")
-            with st.expander("File Details", expanded=False):
-                st.write(f"**Name:** {selected_file['name']}")
-                st.write(f"**Path:** {selected_file['path']}")
-                st.write(f"**ID:** {selected_file['id']}")
-            
-            # 导航按钮
-            col1, col2 = st.columns(2)
-            if col1.button("⬅️ Previous", disabled=(file_idx == 0)):
+        # 返回按钮
+        if st.session_state.current_path:
+            if st.button("⬆️ Back", use_container_width=True):
+                st.session_state.current_path.pop()
+                st.session_state.selected_file = None
                 st.rerun()
-            if col2.button("➡️ Next", disabled=(file_idx == len(json_files) - 1)):
+        
+        st.markdown("---")
+        
+        # 获取当前文件夹内容
+        current = structure.get('__root__', structure)
+        for folder_name in st.session_state.current_path:
+            if folder_name in current['__subfolders__']:
+                current = current['__subfolders__'][folder_name]
+            else:
+                st.error("Invalid path")
+                st.session_state.current_path = []
                 st.rerun()
+                return
+        
+        # 显示子文件夹
+        subfolders = sorted(current['__subfolders__'].keys())
+        if subfolders:
+            st.subheader(f"📂 Folders ({len(subfolders)})")
+            for folder in subfolders:
+                # 计算文件数
+                def count_files(node):
+                    count = len(node.get('__files__', []))
+                    for sub in node.get('__subfolders__', {}).values():
+                        count += count_files(sub)
+                    return count
+                
+                file_count = count_files(current['__subfolders__'][folder])
+                
+                if st.button(f"📁 {folder} ({file_count})", key=f"fold_{folder}", use_container_width=True):
+                    st.session_state.current_path.append(folder)
+                    st.session_state.selected_file = None
+                    st.rerun()
+        
+        # 显示文件
+        files = current.get('__files__', [])
+        if files:
+            st.markdown("---")
+            st.subheader(f"📄 Files ({len(files)})")
             
-            # 显示文件夹结构统计
-            if len(json_files) > 0:
+            for idx, file_info in enumerate(sorted(files, key=lambda x: x['name'])):
+                is_selected = (st.session_state.selected_file and 
+                             st.session_state.selected_file['id'] == file_info['id'])
+                button_type = "primary" if is_selected else "secondary"
+                icon = "✓ " if is_selected else ""
+                
+                if st.button(f"{icon}{file_info['name']}", 
+                           key=f"file_{file_info['id']}", 
+                           type=button_type,
+                           use_container_width=True):
+                    st.session_state.selected_file = file_info
+                    st.rerun()
+            
+            # 文件导航
+            if st.session_state.selected_file:
                 st.markdown("---")
-                with st.expander("📊 Folder Distribution", expanded=False):
-                    # 统计每个子文件夹的文件数量
-                    folder_counts = {}
-                    for file_info in json_files:
-                        path = file_info['path']
-                        folder = os.path.dirname(path) if os.path.dirname(path) else "root"
-                        folder_counts[folder] = folder_counts.get(folder, 0) + 1
-                    
-                    # 显示统计
-                    st.write(f"**Total folders: {len(folder_counts)}**")
-                    for folder, count in sorted(folder_counts.items()):
-                        st.text(f"📁 {folder}: {count} files")
-        else:
-            st.error("No JSON files found in Google Drive folder")
-            st.info("💡 Make sure you've uploaded JSON files and the service account has access")
+                current_idx = next((i for i, f in enumerate(files) 
+                                  if f['id'] == st.session_state.selected_file['id']), None)
+                if current_idx is not None:
+                    col1, col2 = st.columns(2)
+                    if col1.button("⬅️", disabled=(current_idx == 0), use_container_width=True):
+                        st.session_state.selected_file = files[current_idx - 1]
+                        st.rerun()
+                    if col2.button("➡️", disabled=(current_idx == len(files) - 1), use_container_width=True):
+                        st.session_state.selected_file = files[current_idx + 1]
+                        st.rerun()
+                    st.caption(f"File {current_idx + 1} / {len(files)}")
+        
+        if not files and not subfolders:
+            st.info("Empty folder")
+            return
+        
+        if not st.session_state.selected_file:
+            st.info("👆 Select a file")
             return
         
         st.markdown("---")
-        st.header("⚙️ Visualization Options")
+        st.header("⚙️ Options")
         
-        # 选择机械臂侧
-        side = st.radio("Select Arm", ["left", "right"], horizontal=True)
-        
-        # 选择可视化模式
-        viz_mode = st.radio(
-            "Visualization Mode",
-            ["Time Series", "Single Frame"],
-            help="Time Series: 显示整个序列\nSingle Frame: 查看单个帧"
-        )
+        side = st.radio("Arm", ["left", "right"], horizontal=True)
+        viz_mode = st.radio("Mode", ["Time Series", "Single Frame"])
         
         frame_idx = None
         if viz_mode == "Single Frame":
-            # 显示帧选择提示
-            st.info("⏳ Loading file to get frame count...")
+            st.info("Loading...")
     
-    # 主内容区域
+    # 主内容
+    if not st.session_state.selected_file:
+        st.info("Please select a file from the sidebar")
+        return
+    
     try:
-        # 下载并加载数据
-        with st.spinner(f"Downloading {selected_file['name']} from Google Drive..."):
-            data = download_file_from_gdrive(service, selected_file['id'])
+        with st.spinner(f"Loading {st.session_state.selected_file['name']}..."):
+            data = download_file_from_gdrive(service, st.session_state.selected_file['id'])
         
         if data is None:
-            st.error("Failed to load file from Google Drive")
+            st.error("Failed to load file")
             return
         
-        # 如果是 Single Frame 模式，显示帧选择滑块
         if viz_mode == "Single Frame":
             with st.sidebar:
                 num_frames = len(data[f'{side}_wrist_pose'])
-                frame_idx = st.slider("Frame Index", 0, num_frames - 1, 0)
+                frame_idx = st.slider("Frame", 0, num_frames - 1, 0)
         
-        # 显示文件信息
-        with st.expander("📊 Data Summary", expanded=False):
+        with st.expander("📊 Data Summary"):
             col1, col2, col3 = st.columns(3)
-            col1.metric("File Name", selected_file['name'])
-            col2.metric("Number of Frames", len(data[f'{side}_wrist_pose']))
-            col3.metric("Data Keys", len(data.keys()))
-            
-            st.json({k: f"List[{len(v)}]" for k, v in data.items()})
+            col1.metric("File", st.session_state.selected_file['name'])
+            col2.metric("Frames", len(data[f'{side}_wrist_pose']))
+            col3.metric("Keys", len(data.keys()))
         
-        # 创建标签页
         tab1, tab2, tab3, tab4, tab5 = st.tabs([
-            "🎯 Wrist Pose", 
-            "🦾 Joint States", 
-            "👆 Finger Tactile",
-            "🖐️ Palm Tactile",
-            "📊 All Sensors"
+            "🎯 Wrist", "🦾 Joints", "👆 Fingers", "🖐️ Palm", "📊 All"
         ])
         
         with tab1:
-            st.subheader(f"{side.capitalize()} Wrist Pose")
             plot_wrist_pose(data, side, frame_idx)
         
         with tab2:
-            st.subheader(f"{side.capitalize()} Joint States")
             plot_joint_states(data, side, frame_idx)
         
         with tab3:
-            st.subheader(f"{side.capitalize()} Finger Tactile Sensors")
             for finger in ['finger_0', 'finger_1', 'finger_2']:
-                with st.expander(f"📍 {finger.replace('_', ' ').title()}", expanded=(frame_idx is not None)):
+                with st.expander(f"{finger.replace('_', ' ').title()}", expanded=(frame_idx is not None)):
                     plot_tactile_data(data, side, finger, frame_idx)
         
         with tab4:
-            st.subheader(f"{side.capitalize()} Palm Tactile Sensor")
             plot_tactile_data(data, side, 'palm', frame_idx)
         
         with tab5:
             if frame_idx is not None:
-                st.subheader(f"{side.capitalize()} Hand - All Sensors Comparison")
                 plot_all_tactile_comparison(data, side, frame_idx)
             else:
-                st.info("Switch to 'Single Frame' mode to view all sensors comparison")
+                st.info("Switch to Single Frame mode")
                 
     except Exception as e:
-        st.error(f"Error loading or visualizing data: {e}")
+        st.error(f"Error: {e}")
         st.exception(e)
 
 if __name__ == "__main__":
