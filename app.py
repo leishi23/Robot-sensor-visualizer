@@ -300,7 +300,7 @@ def plot_all_tactile_comparison(data, side, frame_idx):
 # ============================================================================
 
 def main():
-    st.title("🤖 Robot Sensor Data Visualizer (Google Drive)")
+    st.title("🤖 Robot Sensor Data Visualizer")
     st.markdown("---")
     
     # 检查是否配置了 secrets
@@ -334,7 +334,7 @@ def main():
         # 方式2: 尝试从 gcp_service_account 内部
         elif "gdrive_folder_id" in st.secrets.get("gcp_service_account", {}):
             folder_id = st.secrets["gcp_service_account"]["gdrive_folder_id"]
-            st.sidebar.warning("⚠️ Found gdrive_folder_id inside gcp_service_account (not recommended)")
+            # st.sidebar.warning("⚠️ Found gdrive_folder_id inside gcp_service_account (not recommended)")
         
         # 方式3: 显示调试信息
         if folder_id is None:
@@ -381,10 +381,10 @@ def main():
     
     # 侧边栏
     with st.sidebar:
-        st.header("📁 File Browser")
+        st.header("📁 File Selection")
         
         # 显示文件夹信息
-        st.info(f"📂 Root Folder")
+        st.info(f"📂 Folder ID: {folder_id[:20]}...")
         
         # 加载文件列表
         with st.spinner("Loading files from Google Drive..."):
@@ -393,113 +393,48 @@ def main():
         if json_files:
             st.success(f"Found {len(json_files)} JSON files")
             
-            # 构建文件夹树结构
-            folder_tree = {}
-            for file_info in json_files:
-                path_parts = file_info['path'].split('/')
-                current = folder_tree
-                
-                # 构建路径树
-                for i, part in enumerate(path_parts[:-1]):  # 除了最后一个（文件名）
-                    if part not in current:
-                        current[part] = {'_folders': {}, '_files': []}
-                    current = current[part]['_folders']
-                
-                # 添加文件到最后一级
-                if len(path_parts) > 1:
-                    parent_folder = path_parts[-2]
-                    if parent_folder not in current:
-                        current[parent_folder] = {'_folders': {}, '_files': []}
-                    current[parent_folder]['_files'].append(file_info)
-                else:
-                    # 根目录文件
-                    if '_root_files' not in folder_tree:
-                        folder_tree['_root_files'] = []
-                    folder_tree['_root_files'].append(file_info)
+            # 文件选择
+            file_idx = st.selectbox(
+                "Select File",
+                range(len(json_files)),
+                format_func=lambda x: json_files[x]['path']
+            )
             
-            # 使用 session state 管理选择
-            if 'selected_file' not in st.session_state:
-                st.session_state.selected_file = None
-            if 'expanded_folders' not in st.session_state:
-                st.session_state.expanded_folders = set()
+            selected_file = json_files[file_idx]
             
-            # 递归渲染文件夹树
-            def render_folder_tree(tree, path_prefix="", level=0):
-                """递归渲染文件夹树"""
-                indent = "　" * level  # 使用全角空格缩进
-                
-                # 渲染文件夹
-                for folder_name in sorted(tree.get('_folders', {}).keys()):
-                    folder_path = f"{path_prefix}/{folder_name}" if path_prefix else folder_name
-                    is_expanded = folder_path in st.session_state.expanded_folders
-                    
-                    # 文件夹图标和按钮
-                    icon = "📂" if is_expanded else "📁"
-                    folder_label = f"{indent}{icon} {folder_name}"
-                    
-                    if st.button(folder_label, key=f"folder_{folder_path}", use_container_width=True):
-                        if is_expanded:
-                            st.session_state.expanded_folders.discard(folder_path)
-                        else:
-                            st.session_state.expanded_folders.add(folder_path)
-                        st.rerun()
-                    
-                    # 如果展开，递归渲染子内容
-                    if is_expanded:
-                        subtree = tree['_folders'][folder_name]
-                        render_folder_tree(subtree, folder_path, level + 1)
-                
-                # 渲染文件
-                for file_info in sorted(tree.get('_files', []), key=lambda x: x['name']):
-                    file_indent = "　" * (level + 1)
-                    is_selected = (st.session_state.selected_file and 
-                                 st.session_state.selected_file['id'] == file_info['id'])
-                    
-                    file_icon = "✓" if is_selected else "　"
-                    file_label = f"{file_indent}{file_icon} 📄 {file_info['name']}"
-                    
-                    if st.button(file_label, key=f"file_{file_info['id']}", 
-                               use_container_width=True,
-                               type="primary" if is_selected else "secondary"):
-                        st.session_state.selected_file = file_info
-                        st.rerun()
+            # 显示当前文件信息
+            st.info(f"📄 File {file_idx + 1}/{len(json_files)}")
+            with st.expander("File Details", expanded=False):
+                st.write(f"**Name:** {selected_file['name']}")
+                st.write(f"**Path:** {selected_file['path']}")
+                st.write(f"**ID:** {selected_file['id']}")
             
-            # 渲染根目录文件（如果有）
-            if '_root_files' in folder_tree:
-                for file_info in sorted(folder_tree['_root_files'], key=lambda x: x['name']):
-                    is_selected = (st.session_state.selected_file and 
-                                 st.session_state.selected_file['id'] == file_info['id'])
-                    file_icon = "✓" if is_selected else "　"
-                    if st.button(f"{file_icon} 📄 {file_info['name']}", 
-                               key=f"root_file_{file_info['id']}",
-                               use_container_width=True,
-                               type="primary" if is_selected else "secondary"):
-                        st.session_state.selected_file = file_info
-                        st.rerun()
+            # 导航按钮
+            col1, col2 = st.columns(2)
+            if col1.button("⬅️ Previous", disabled=(file_idx == 0)):
+                st.rerun()
+            if col2.button("➡️ Next", disabled=(file_idx == len(json_files) - 1)):
+                st.rerun()
             
-            # 渲染文件夹树
-            render_folder_tree(folder_tree)
-            
-            # 显示当前选择的文件
-            st.markdown("---")
-            if st.session_state.selected_file:
-                st.success(f"**Selected:**\n{st.session_state.selected_file['name']}")
-                selected_file = st.session_state.selected_file
-                
-                # 导航按钮
-                current_idx = next((i for i, f in enumerate(json_files) if f['id'] == selected_file['id']), None)
-                if current_idx is not None:
-                    col1, col2 = st.columns(2)
-                    if col1.button("⬅️ Prev", disabled=(current_idx == 0), use_container_width=True):
-                        st.session_state.selected_file = json_files[current_idx - 1]
-                        st.rerun()
-                    if col2.button("Next ➡️", disabled=(current_idx == len(json_files) - 1), use_container_width=True):
-                        st.session_state.selected_file = json_files[current_idx + 1]
-                        st.rerun()
-                    st.caption(f"File {current_idx + 1} of {len(json_files)}")
-            else:
-                st.warning("👆 Select a file above")
-                return
+            # 显示文件夹结构统计
+            if len(json_files) > 0:
+                st.markdown("---")
+                with st.expander("📊 Folder Distribution", expanded=False):
+                    # 统计每个子文件夹的文件数量
+                    folder_counts = {}
+                    for file_info in json_files:
+                        path = file_info['path']
+                        folder = os.path.dirname(path) if os.path.dirname(path) else "root"
+                        folder_counts[folder] = folder_counts.get(folder, 0) + 1
+                    
+                    # 显示统计
+                    st.write(f"**Total folders: {len(folder_counts)}**")
+                    for folder, count in sorted(folder_counts.items()):
+                        st.text(f"📁 {folder}: {count} files")
+        else:
+            st.error("No JSON files found in Google Drive folder")
+            st.info("💡 Make sure you've uploaded JSON files and the service account has access")
+            return
         
         st.markdown("---")
         st.header("⚙️ Visualization Options")
