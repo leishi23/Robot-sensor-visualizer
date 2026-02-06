@@ -9,6 +9,7 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 import io
+import hashlib
 
 # 页面配置
 st.set_page_config(
@@ -29,6 +30,83 @@ st.markdown("""
     }
     </style>
 """, unsafe_allow_html=True)
+
+# ============================================================================
+# 密码保护
+# ============================================================================
+
+def hash_password(password):
+    """对密码进行 SHA256 哈希"""
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def check_password():
+    """检查密码，返回 True 表示验证通过"""
+    
+    # 从 secrets 获取密码哈希（如果没有设置，使用默认密码 "robot2024"）
+    correct_password_hash = st.secrets.get("app_password_hash", 
+                                          hash_password("robot2024"))
+    
+    def password_entered():
+        """验证用户输入的密码"""
+        entered_password = st.session_state.get("password", "")
+        if hash_password(entered_password) == correct_password_hash:
+            st.session_state["password_correct"] = True
+            # 清除密码，不保存在 session
+            if "password" in st.session_state:
+                del st.session_state["password"]
+        else:
+            st.session_state["password_correct"] = False
+
+    # 首次访问或密码错误
+    if "password_correct" not in st.session_state:
+        # 显示登录界面
+        st.title("🔒 Robot Sensor Data Visualizer")
+        st.markdown("---")
+        
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            st.markdown("### 请输入密码访问")
+            st.text_input(
+                "Password",
+                type="password",
+                on_change=password_entered,
+                key="password",
+                placeholder="输入密码..."
+            )
+            
+            st.info("💡 如果忘记密码，请联系管理员")
+        
+        return False
+    
+    elif not st.session_state["password_correct"]:
+        # 密码错误
+        st.title("🔒 Robot Sensor Data Visualizer")
+        st.markdown("---")
+        
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            st.markdown("### 请输入密码访问")
+            st.text_input(
+                "Password",
+                type="password",
+                on_change=password_entered,
+                key="password",
+                placeholder="输入密码..."
+            )
+            st.error("❌ 密码错误，请重试")
+        
+        return False
+    
+    else:
+        # 密码正确，显示登出按钮
+        with st.sidebar:
+            if st.button("🔓 Logout", use_container_width=True):
+                # 清除所有 session state
+                for key in list(st.session_state.keys()):
+                    del st.session_state[key]
+                st.rerun()
+        
+        return True
 
 # ============================================================================
 # Google Drive 相关函数
@@ -306,6 +384,10 @@ def plot_all_tactile_comparison(data, side, frame_idx):
 # ============================================================================
 
 def main():
+    # 密码验证
+    if not check_password():
+        st.stop()  # 如果密码不正确，停止执行
+    
     st.title("🤖 Robot Sensor Data Visualizer")
     st.markdown("---")
     
