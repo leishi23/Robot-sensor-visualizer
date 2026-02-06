@@ -53,7 +53,7 @@ def check_password():
     # 方式2: 从 gcp_service_account 内部
     elif "gcp_service_account" in st.secrets and "app_password_hash" in st.secrets["gcp_service_account"]:
         correct_password_hash = st.secrets["gcp_service_account"]["app_password_hash"]
-        st.sidebar.caption("🔑 Password config: inside gcp_service_account")
+        # st.sidebar.caption("🔑 Password config: inside gcp_service_account")
     
     # 方式3: 使用默认密码
     else:
@@ -91,12 +91,12 @@ def check_password():
             st.info("💡 如果忘记密码，请联系管理员")
             
             # 调试信息（可选，帮助排查问题）
-            with st.expander("🔧 Debug Info", expanded=False):
-                st.write("**Secrets keys:**", list(st.secrets.keys()))
-                if "gcp_service_account" in st.secrets:
-                    st.write("**Keys in gcp_service_account:**", 
-                            list(st.secrets["gcp_service_account"].keys()))
-                st.write("**Password hash found:**", correct_password_hash[:20] + "..." if correct_password_hash else "None")
+            # with st.expander("🔧 Debug Info", expanded=False):
+            #     st.write("**Secrets keys:**", list(st.secrets.keys()))
+            #     if "gcp_service_account" in st.secrets:
+            #         st.write("**Keys in gcp_service_account:**", 
+            #                 list(st.secrets["gcp_service_account"].keys()))
+            #     # st.write("**Password hash found:**", correct_password_hash[:20] + "..." if correct_password_hash else "None")
         
         return False
     
