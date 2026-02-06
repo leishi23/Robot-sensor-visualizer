@@ -42,9 +42,23 @@ def hash_password(password):
 def check_password():
     """检查密码，返回 True 表示验证通过"""
     
-    # 从 secrets 获取密码哈希（如果没有设置，使用默认密码 "robot2024"）
-    correct_password_hash = st.secrets.get("app_password_hash", 
-                                          hash_password("robot2024"))
+    # 尝试多种方式获取密码哈希
+    correct_password_hash = None
+    
+    # 方式1: 顶层（推荐）
+    if "app_password_hash" in st.secrets:
+        correct_password_hash = st.secrets["app_password_hash"]
+        st.sidebar.caption("🔑 Password config: top level")
+    
+    # 方式2: 从 gcp_service_account 内部
+    elif "gcp_service_account" in st.secrets and "app_password_hash" in st.secrets["gcp_service_account"]:
+        correct_password_hash = st.secrets["gcp_service_account"]["app_password_hash"]
+        st.sidebar.caption("🔑 Password config: inside gcp_service_account")
+    
+    # 方式3: 使用默认密码
+    else:
+        correct_password_hash = hash_password("robot2024")
+        st.sidebar.warning("⚠️ Using default password: robot2024")
     
     def password_entered():
         """验证用户输入的密码"""
@@ -75,6 +89,14 @@ def check_password():
             )
             
             st.info("💡 如果忘记密码，请联系管理员")
+            
+            # 调试信息（可选，帮助排查问题）
+            with st.expander("🔧 Debug Info", expanded=False):
+                st.write("**Secrets keys:**", list(st.secrets.keys()))
+                if "gcp_service_account" in st.secrets:
+                    st.write("**Keys in gcp_service_account:**", 
+                            list(st.secrets["gcp_service_account"].keys()))
+                st.write("**Password hash found:**", correct_password_hash[:20] + "..." if correct_password_hash else "None")
         
         return False
     
@@ -94,6 +116,14 @@ def check_password():
                 placeholder="输入密码..."
             )
             st.error("❌ 密码错误，请重试")
+            
+            # 调试信息
+            with st.expander("🔧 Debug Info", expanded=False):
+                st.write("**Secrets keys:**", list(st.secrets.keys()))
+                if "gcp_service_account" in st.secrets:
+                    st.write("**Keys in gcp_service_account:**", 
+                            list(st.secrets["gcp_service_account"].keys()))
+                st.write("**Password hash found:**", correct_password_hash[:20] + "..." if correct_password_hash else "None")
         
         return False
     
