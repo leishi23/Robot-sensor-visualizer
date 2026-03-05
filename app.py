@@ -40,100 +40,66 @@ def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
 def get_correct_password_hash():
-    """获取正确的密码哈希，统一入口避免多处逻辑不一致"""
-    # 方式1: 从 gcp_service_account 内部（优先，因为你的配置在这里）
+    """获取正确的密码哈希"""
     if "gcp_service_account" in st.secrets and "app_password_hash" in st.secrets["gcp_service_account"]:
         return st.secrets["gcp_service_account"]["app_password_hash"]
-    
-    # 方式2: 顶层
     if "app_password_hash" in st.secrets:
         return st.secrets["app_password_hash"]
-    
-    # 方式3: 使用默认密码
-    st.sidebar.warning("⚠️ Using default password: robot2024")
     return hash_password("robot2024")
 
 def check_password():
-    """检查密码，返回 True 表示验证通过"""
+    """
+    检查密码，返回 True 表示验证通过。
     
-    correct_password_hash = get_correct_password_hash()
+    关键改动：
+    - 用 st.session_state["authenticated"] 作为唯一认证标志
+    - 登录成功后立即 st.rerun()，确保密码输入框不再渲染
+    - 不使用 on_change 回调，改用显式 Login 按钮，避免 rerun 时状态混乱
+    """
     
-    def password_entered():
-        """验证用户输入的密码"""
-        entered_password = st.session_state.get("password", "")
-        entered_hash = hash_password(entered_password.strip())
-        if entered_hash == correct_password_hash:
-            st.session_state["password_correct"] = True
-            # 清除密码，不保存在 session
-            if "password" in st.session_state:
-                del st.session_state["password"]
-        else:
-            st.session_state["password_correct"] = False
-
-    # 首次访问或密码错误
-    if "password_correct" not in st.session_state:
-        # 显示登录界面
-        st.title("🔒 Robot Sensor Data Visualizer")
-        st.markdown("---")
-        
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            st.markdown("### 请输入密码访问")
-            st.text_input(
-                "Password",
-                type="password",
-                on_change=password_entered,
-                key="password",
-                placeholder="输入密码..."
-            )
-            
-            st.info("💡 如果忘记密码，请联系管理员")
-        
-        return False
-    
-    elif not st.session_state["password_correct"]:
-        # 密码错误
-        st.title("🔒 Robot Sensor Data Visualizer")
-        st.markdown("---")
-        
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            st.markdown("### 请输入密码访问")
-            st.text_input(
-                "Password",
-                type="password",
-                on_change=password_entered,
-                key="password",
-                placeholder="输入密码..."
-            )
-            st.error("❌ 密码错误，请重试")
-            
-            # 调试信息
-            with st.expander("🔧 Debug Info", expanded=False):
-                st.write("**Secrets keys:**", list(st.secrets.keys()))
-                if "gcp_service_account" in st.secrets:
-                    st.write("**Keys in gcp_service_account:**", 
-                            list(st.secrets["gcp_service_account"].keys()))
-                st.write("**Password hash (stored) prefix:**", 
-                         correct_password_hash[:20] + "..." if correct_password_hash else "None")
-                # 临时调试: 显示用户输入的哈希前缀，帮助排查
-                if "password" in st.session_state:
-                    entered = st.session_state["password"]
-                    st.write("**Password hash (entered) prefix:**", 
-                             hash_password(entered.strip())[:20] + "...")
-        
-        return False
-    
-    else:
-        # 密码正确，显示登出按钮
+    # 已经验证通过，直接返回 True，不渲染任何登录 UI
+    if st.session_state.get("authenticated", False):
         with st.sidebar:
             if st.button("🔓 Logout", use_container_width=True):
-                # 清除所有 session state
-                for key in list(st.session_state.keys()):
-                    del st.session_state[key]
+                st.session_state.clear()
                 st.rerun()
-        
         return True
+    
+    # ---------- 未验证，显示登录界面 ----------
+    correct_password_hash = get_correct_password_hash()
+    
+    st.title("🔒 Robot Sensor Data Visualizer")
+    st.markdown("---")
+    
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.markdown("### 请输入密码访问")
+        
+        password = st.text_input(
+            "Password",
+            type="password",
+            key="login_password",
+            placeholder="输入密码..."
+        )
+        
+        login_clicked = st.button("Login", use_container_width=True, type="primary")
+        
+        if login_clicked:
+            if password:
+                entered_hash = hash_password(password.strip())
+                if entered_hash == correct_password_hash:
+                    st.session_state["authenticated"] = True
+                    # 关键：立即 rerun，下次循环走 authenticated=True 分支
+                    # 密码输入框不会再被渲染
+                    st.rerun()
+                else:
+                    st.error("❌ 密码错误，请重试")
+            else:
+                st.warning("请输入密码")
+        
+        st.info("💡 如果忘记密码，请联系管理员")
+    
+    return False
 
 # ============================================================================
 # Google Drive 相关函数
@@ -162,7 +128,6 @@ def list_json_files_from_gdrive(_service, folder_id):
     json_files = []
     
     def list_files_recursive(parent_id, parent_path=""):
-        """递归列出文件"""
         try:
             query = f"'{parent_id}' in parents and trashed=false"
             results = _service.files().list(
@@ -203,7 +168,6 @@ def build_folder_structure(json_files):
     
     for file_info in json_files:
         parts = file_info['path'].split('/')
-        
         current = root
         
         for part in parts[:-1]:
@@ -421,7 +385,6 @@ def main():
             return
         
         folder_id = None
-        # 优先从 gcp_service_account 内部读取
         if "gcp_service_account" in st.secrets and "gdrive_folder_id" in st.secrets["gcp_service_account"]:
             folder_id = st.secrets["gcp_service_account"]["gdrive_folder_id"]
         elif "gdrive_folder_id" in st.secrets:
