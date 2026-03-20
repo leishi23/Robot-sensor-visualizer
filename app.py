@@ -252,7 +252,6 @@ def download_bag_to_temp(_service, file_id, file_name):
     tmp_dir = _get_temp_dir()
     local_path = os.path.join(tmp_dir, f"{file_id}_{file_name}")
 
-    # 已缓存
     if os.path.isfile(local_path):
         return local_path
 
@@ -455,11 +454,26 @@ TACTILE_TOPICS = {
         "palm": "/robot/data/glove_right_palm_tactile/tactile",
     },
 }
-IMAGE_TOPICS = {
-    "color": "/robot/data/head_camera/color_image",
-    "depth": "/robot/data/head_camera/depth_image",
-}
 CONFIG_TOPIC = "/robot/data/exoskeleton_glove/config"
+
+# ─── Camera topic 候选列表（兼容新旧命名，按优先级排列）─────────────────────
+# 每个 slot 取第一个在 bag 中实际存在的 topic
+CAMERA_TOPIC_CANDIDATES = {
+    "color_main": [
+        ("Color (head)",  "/robot/data/head_camera/color_image"),   # 旧
+        ("Color Left",    "/robot/data/color_left/color_image"),     # 新
+    ],
+    "depth_main": [
+        ("Depth (head)",  "/robot/data/head_camera/depth_image"),    # 旧
+        ("Depth Left",    "/robot/data/color_left/depth_image"),     # 新
+    ],
+    "color_right": [
+        ("Color Right",   "/robot/data/color_right/color_image"),    # 新增
+    ],
+    "depth_right": [
+        ("Depth Right",   "/robot/data/color_right/depth_image"),    # 新增（备用）
+    ],
+}
 
 
 # --- 自定义消息类型注册 ---
@@ -531,6 +545,37 @@ string event_detail
 """
     typestore.register(get_types_from_msg(event_msgdef, "data_msgs/msg/Event"))
     return typestore
+
+
+# ============================================================================
+# Camera Topic 自动探测
+# ============================================================================
+
+@st.cache_data(show_spinner=False)
+def bag_detect_camera_topics(bag_path: str) -> dict:
+    """
+    扫描 bag 中实际存在的 topic，与 CAMERA_TOPIC_CANDIDATES 对比，
+    返回可用的 camera slot 字典：
+      { slot_name: {'label': str, 'topic': str, 'count': int} }
+    每个 slot 按优先级取第一个匹配到的 topic。
+    """
+    from rosbags.rosbag1 import Reader as Rosbag1Reader
+
+    with Rosbag1Reader(bag_path) as reader:
+        existing = {name: t.msgcount for name, t in reader.topics.items()}
+
+    available = {}
+    for slot, candidates in CAMERA_TOPIC_CANDIDATES.items():
+        for label, topic in candidates:
+            if topic in existing:
+                available[slot] = {
+                    "label": label,
+                    "topic": topic,
+                    "count": existing[topic],
+                }
+                break  # 取优先级最高的
+
+    return available
 
 
 # --- 数据加载函数 ---
@@ -653,17 +698,23 @@ def bag_load_tactile_data(bag_path):
 
 
 @st.cache_data(show_spinner="Loading image index...")
-def bag_load_image_index(bag_path):
+def bag_load_image_index(bag_path: str, camera_topics: dict) -> dict:
+    """
+    camera_topics: bag_detect_camera_topics() 的返回值
+    返回 { slot_name: [timestamp, ...] }
+    """
     from rosbags.rosbag1 import Reader as Rosbag1Reader
 
-    timestamps = {"color": [], "depth": []}
+    all_cam_topics = {info["topic"] for info in camera_topics.values()}
+    topic_to_slot = {info["topic"]: slot for slot, info in camera_topics.items()}
+
+    timestamps = defaultdict(list)
     with Rosbag1Reader(bag_path) as reader:
         for conn, timestamp, _ in reader.messages():
-            if conn.topic == IMAGE_TOPICS["color"]:
-                timestamps["color"].append(timestamp / 1e9)
-            elif conn.topic == IMAGE_TOPICS["depth"]:
-                timestamps["depth"].append(timestamp / 1e9)
-    return timestamps
+            if conn.topic in all_cam_topics:
+                slot = topic_to_slot[conn.topic]
+                timestamps[slot].append(timestamp / 1e9)
+    return dict(timestamps)
 
 
 def bag_load_single_image(bag_path, topic, target_idx):
@@ -999,12 +1050,149 @@ def bag_plot_cross_topic_sync(topic_timestamps):
     st.plotly_chart(fig, use_container_width=True)
 
 
+# ============================================================================
+# Camera Tab 渲染（动态适配探测到的 slot）
+# ============================================================================
+
+def _render_color_slot(bag_path, topic, label, timestamps, slot_key):
+    """渲染彩色图像 slot"""
+    from PIL import Image
+
+    n = len(timestamps)
+    idx = st.slider(f"Frame", 0, n - 1, 0, key=f"bag_slider_{slot_key}")
+    st.caption(f"{idx}/{n} | t={timestamps[idx] - timestamps[0]:.3f}s")
+
+    idata, ifmt, _ = bag_load_single_image(bag_path, topic, idx)
+    if idata is not None:
+        try:
+            im = Image.open(io.BytesIO(bytes(idata)))
+            st.image(im, use_container_width=True)
+            st.caption(f"{im.size[0]}x{im.size[1]}  format={ifmt}")
+        except Exception as e:
+            st.error(f"Decode error: {e}")
+            st.caption(f"format_field='{ifmt}' | raw {len(bytes(idata)) / 1024:.1f}KB")
+    else:
+        st.warning("No image data")
+
+
+def _render_depth_slot(bag_path, topic, label, timestamps, slot_key):
+    """渲染深度图 slot（16-bit PNG → Plotly Heatmap）"""
+    from PIL import Image
+
+    n = len(timestamps)
+    idx = st.slider(f"Frame", 0, n - 1, 0, key=f"bag_slider_{slot_key}")
+    st.caption(f"{idx}/{n} | t={timestamps[idx] - timestamps[0]:.3f}s")
+
+    idata, ifmt, _ = bag_load_single_image(bag_path, topic, idx)
+    if idata is not None:
+        try:
+            im = Image.open(io.BytesIO(bytes(idata)))
+            depth_arr = np.array(im, dtype=np.float32)
+            valid = depth_arr[depth_arr > 0]
+            dmin = float(valid.min()) if len(valid) > 0 else 0.0
+            dmax = float(depth_arr.max())
+            if dmax > dmin:
+                depth_norm = np.clip((depth_arr - dmin) / (dmax - dmin) * 255, 0, 255).astype(np.uint8)
+            else:
+                depth_norm = np.zeros_like(depth_arr, dtype=np.uint8)
+            fig_d = go.Figure(data=go.Heatmap(
+                z=depth_norm[::-1], colorscale="Turbo", showscale=True,
+                colorbar=dict(title="Depth"),
+            ))
+            fig_d.update_layout(
+                height=400, margin=dict(l=0, r=0, t=0, b=0),
+                xaxis=dict(showticklabels=False),
+                yaxis=dict(showticklabels=False),
+            )
+            st.plotly_chart(fig_d, use_container_width=True)
+            st.caption(f"{im.size[0]}x{im.size[1]}  format={ifmt} | range=[{dmin:.0f}, {dmax:.0f}]")
+        except Exception as e:
+            st.error(f"Decode error: {e}")
+            st.caption(f"format_field='{ifmt}' | raw {len(bytes(idata)) / 1024:.1f}KB")
+    else:
+        st.warning("No image data")
+
+
+def bag_render_camera_tab(bag_path, camera_topics, img_timestamps):
+    """
+    动态渲染 Camera Tab。
+    根据探测到的 slot 决定列数，自动区分 color/depth，兼容新旧命名。
+    """
+    if not camera_topics:
+        st.warning("⚠️ 当前 bag 中未找到任何已知 camera topic。")
+        st.info(
+            "已知候选 topic：\n"
+            + "\n".join(
+                f"  • {t}" for cands in CAMERA_TOPIC_CANDIDATES.values() for _, t in cands
+            )
+        )
+        return
+
+    # 显示探测到的 topic 信息
+    with st.expander("📡 探测到的 Camera Topics", expanded=False):
+        for slot, info in camera_topics.items():
+            st.markdown(f"- **{info['label']}** `{info['topic']}` — {info['count']} frames")
+
+    # 动态列数（最多 3 列）
+    all_slots = list(camera_topics.keys())
+    n_cols = min(len(all_slots), 3)
+    cols = st.columns(n_cols)
+
+    for i, slot in enumerate(all_slots):
+        info = camera_topics[slot]
+        col = cols[i % n_cols]
+        with col:
+            st.markdown(f"**{info['label']}**")
+            ts = img_timestamps.get(slot, [])
+            if not ts:
+                st.warning("No timestamps")
+                continue
+            is_depth = "depth" in slot
+            if is_depth:
+                _render_depth_slot(bag_path, info["topic"], info["label"], ts, slot)
+            else:
+                _render_color_slot(bag_path, info["topic"], info["label"], ts, slot)
+
+    # Color-Depth 同步分析（自动配对）
+    sync_pairs = [
+        ("color_main", "depth_main"),
+        ("color_left",  "depth_left"),   # 万一以后 slot 名直接叫 color_left
+    ]
+    for ca, cb in sync_pairs:
+        if ca in img_timestamps and cb in img_timestamps:
+            st.markdown("---")
+            st.subheader(
+                f"Camera Sync: {camera_topics[ca]['label']} vs {camera_topics[cb]['label']}"
+            )
+            cts = np.array(img_timestamps[ca])
+            dts = np.array(img_timestamps[cb])
+            ml = min(len(cts), len(dts))
+            offs = (dts[:ml] - cts[:ml]) * 1000
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=np.arange(ml), y=offs, mode="lines"))
+            fig.update_layout(
+                title="Depth-Color Offset",
+                xaxis_title="Frame",
+                yaxis_title="ms",
+                height=300,
+            )
+            st.plotly_chart(fig, use_container_width=True)
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Mean", f"{np.mean(offs):.2f}ms")
+            c2.metric("Std", f"{np.std(offs):.2f}ms")
+            c3.metric("Max|off|", f"{np.max(np.abs(offs)):.2f}ms")
+            break
+
+
 # --- Bag 主渲染 ---
 
 
 def render_bag_visualizer(bag_path, side, viz_mode, frame_idx):
     """ROS bag 文件的完整可视化 UI"""
     metadata, topic_timestamps = bag_load_metadata(bag_path)
+
+    # Camera topic 自动探测
+    camera_topics = bag_detect_camera_topics(bag_path)
 
     # 单帧 slider
     if viz_mode == "Single Frame":
@@ -1119,61 +1307,9 @@ def render_bag_visualizer(bag_path, side, viz_mode, frame_idx):
             st.warning("No data")
 
     with tab5:
-        st.subheader("Head Camera")
-        img_ts = bag_load_image_index(bag_path)
-        cc, cd = st.columns(2)
-        with cc:
-            st.markdown("**Color (jpg)**")
-            if img_ts["color"]:
-                nc = len(img_ts["color"])
-                ci = st.slider("Color Frame", 0, nc - 1, 0, key="bag_cs")
-                st.caption(f"{ci}/{nc} | t={img_ts['color'][ci] - img_ts['color'][0]:.3f}s")
-                idata, ifmt, _ = bag_load_single_image(bag_path, IMAGE_TOPICS["color"], ci)
-                if idata is not None:
-                    from PIL import Image
-
-                    im = Image.open(io.BytesIO(bytes(idata)))
-                    st.image(im, use_container_width=True)
-                    st.caption(f"{im.size[0]}x{im.size[1]} {ifmt}")
-            else:
-                st.info("No color images")
-        with cd:
-            st.markdown("**Depth (png)**")
-            if img_ts["depth"]:
-                nd = len(img_ts["depth"])
-                di = st.slider("Depth Frame", 0, nd - 1, 0, key="bag_ds")
-                st.caption(f"{di}/{nd} | t={img_ts['depth'][di] - img_ts['depth'][0]:.3f}s")
-                idata, ifmt, _ = bag_load_single_image(bag_path, IMAGE_TOPICS["depth"], di)
-                if idata is not None:
-                    from PIL import Image
-
-                    im = Image.open(io.BytesIO(bytes(idata)))
-                    depth_arr = np.array(im, dtype=np.float32)
-                    valid = depth_arr[depth_arr > 0]
-                    dmin = np.min(valid) if len(valid) > 0 else 0
-                    dmax = np.max(depth_arr)
-                    if dmax > dmin:
-                        depth_norm = np.clip((depth_arr - dmin) / (dmax - dmin) * 255, 0, 255).astype(np.uint8)
-                    else:
-                        depth_norm = np.zeros_like(depth_arr, dtype=np.uint8)
-                    fig_d = go.Figure(
-                        data=go.Heatmap(
-                            z=depth_norm[::-1],
-                            colorscale="Turbo",
-                            showscale=True,
-                            colorbar=dict(title="Depth"),
-                        )
-                    )
-                    fig_d.update_layout(
-                        height=400,
-                        margin=dict(l=0, r=0, t=0, b=0),
-                        xaxis=dict(showticklabels=False),
-                        yaxis=dict(showticklabels=False),
-                    )
-                    st.plotly_chart(fig_d, use_container_width=True)
-                    st.caption(f"{im.size[0]}x{im.size[1]} {ifmt} | [{dmin:.0f}, {dmax:.0f}]")
-            else:
-                st.info("No depth images")
+        st.subheader("Camera")
+        img_timestamps = bag_load_image_index(bag_path, camera_topics)
+        bag_render_camera_tab(bag_path, camera_topics, img_timestamps)
 
     with tab6:
         st.subheader("Data Quality")
@@ -1187,21 +1323,6 @@ def render_bag_visualizer(bag_path, side, viz_mode, frame_idx):
         st.markdown("---")
         st.subheader("Cross-Topic Sync (120 Hz)")
         bag_plot_cross_topic_sync(topic_timestamps)
-        if IMAGE_TOPICS["color"] in topic_timestamps and IMAGE_TOPICS["depth"] in topic_timestamps:
-            st.markdown("---")
-            st.subheader("Camera Sync")
-            cts = np.array(topic_timestamps[IMAGE_TOPICS["color"]])
-            dts = np.array(topic_timestamps[IMAGE_TOPICS["depth"]])
-            ml = min(len(cts), len(dts))
-            offs = (dts[:ml] - cts[:ml]) * 1000
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=np.arange(ml), y=offs, mode="lines"))
-            fig.update_layout(title="Depth-Color Offset", xaxis_title="Frame", yaxis_title="ms", height=300)
-            st.plotly_chart(fig, use_container_width=True)
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Mean", f"{np.mean(offs):.2f}ms")
-            c2.metric("Std", f"{np.std(offs):.2f}ms")
-            c3.metric("Max|off|", f"{np.max(np.abs(offs)):.2f}ms")
 
     with tab7:
         st.subheader("All Topics")
@@ -1322,7 +1443,6 @@ def main():
             st.cache_data.clear()
             st.rerun()
 
-        # 面包屑
         breadcrumb = " / ".join(["Root"] + st.session_state.current_path)
         st.markdown(f"**📂 {breadcrumb}**")
 
@@ -1334,7 +1454,6 @@ def main():
 
         st.markdown("---")
 
-        # 导航到当前节点
         current = structure
         for folder_name in st.session_state.current_path:
             if folder_name in current["__subfolders__"]:
@@ -1344,7 +1463,6 @@ def main():
                 st.rerun()
                 return
 
-        # 子文件夹
         subfolders = sorted(current["__subfolders__"].keys())
         if subfolders:
             st.subheader(f"📂 Folders ({len(subfolders)})")
@@ -1362,7 +1480,6 @@ def main():
                     st.session_state.selected_file = None
                     st.rerun()
 
-        # 文件列表
         files = sorted(current.get("__files__", []), key=lambda x: x["name"])
         if files:
             st.markdown("---")
@@ -1381,7 +1498,6 @@ def main():
                     st.session_state.selected_file = fi
                     st.rerun()
 
-            # 前后翻页
             if st.session_state.selected_file:
                 st.markdown("---")
                 cidx = next(
@@ -1415,7 +1531,6 @@ def main():
     file_type = selected["type"]
     size_mb = selected["size"] / 1024 / 1024
 
-    # 侧边栏公共选项
     with st.sidebar:
         st.markdown("---")
         st.header("⚙️ Options")
